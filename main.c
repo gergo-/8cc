@@ -16,7 +16,15 @@ static bool cpponly;
 static bool dumpasm;
 static bool dontlink;
 static Buffer *cppdefs;
-static Vector *tmpfiles = &EMPTY_VECTOR;
+
+#define VEC_NAME    filename_vec
+#define VALUE_T     char*
+#include "generic_vec.h"
+#include "generic_vec.c"
+#undef VEC_NAME
+#undef VALUE_T
+
+static filename_vec *tmpfiles = &empty_vector(filename_vec);
 
 static void usage(int exitcode) {
     fprintf(exitcode ? stderr : stdout,
@@ -46,8 +54,8 @@ static void usage(int exitcode) {
 }
 
 static void delete_temp_files() {
-    for (int i = 0; i < vec_len(tmpfiles); i++)
-        unlink(vec_get(tmpfiles, i));
+    for (int i = 0; i < filename_vec_len(tmpfiles); i++)
+        unlink(filename_vec_get(tmpfiles, i));
 }
 
 static char *base(char *path) {
@@ -70,7 +78,7 @@ static FILE *open_asmfile() {
         asmfile = format("/tmp/8ccXXXXXX.s");
         if (!mkstemps(asmfile, 2))
             perror("mkstemps");
-        vec_push(tmpfiles, asmfile);
+        filename_vec_push(tmpfiles, asmfile);
     }
     if (!strcmp(asmfile, "-"))
         return stdout;
@@ -179,9 +187,9 @@ int main(int argc, char **argv) {
     if (cpponly)
         preprocess();
 
-    Vector *toplevels = read_toplevels();
-    for (int i = 0; i < vec_len(toplevels); i++) {
-        Node *v = vec_get(toplevels, i);
+    node_vec *toplevels = read_toplevels();
+    for (int i = 0; i < node_vec_len(toplevels); i++) {
+        Node *v = node_vec_get(toplevels, i);
         if (dumpast)
             printf("%s", node2s(v));
         else

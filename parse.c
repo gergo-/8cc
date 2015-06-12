@@ -24,18 +24,75 @@
 // source code.
 SourceLoc *source_loc;
 
+// A map representing environments.
+#define MAP_NAME    env_map
+#define VALUE_T     Node*
+#include "generic_map.h"
+#include "generic_map.c"
+#undef MAP_NAME
+#undef VALUE_T
+
+// A map for types
+#define MAP_NAME    type_map
+#define VALUE_T     Type*
+#define OMIT_TYPE_REDEF
+#include "generic_map.h"
+#include "generic_map.c"
+#undef MAP_NAME
+#undef VALUE_T
+#undef OMIT_TYPE_REDEF
+
+// And a dict for types
+#define DICT_NAME   type_dict
+#define VALUE_T     Type*
+#define MAP_NAME    type_map
+#define OMIT_TYPE_REDEF
+#include "generic_dict.h"
+#include "generic_dict.c"
+#undef DICT_NAME
+#undef VALUE_T
+#undef MAP_NAME
+#undef OMIT_TYPE_REDEF
+
+// A vector of types.
+#define VEC_NAME    type_vec
+#define VALUE_T     Type*
+#define OMIT_TYPE_REDEF
+#include "generic_vec.h"
+#include "generic_vec.c"
+#undef VEC_NAME
+#undef VALUE_T
+#undef OMIT_TYPE_REDEF
+
+// A map for nodes. This is structurally identical to env_map, but it may be
+// good to keep it logically distinct.
+#define MAP_NAME    node_map
+#define VALUE_T     Node*
+#include "generic_map.h"
+#include "generic_map.c"
+#undef MAP_NAME
+#undef VALUE_T
+
+// Token vector (declarations only)
+#define VEC_NAME    token_vec
+#define VALUE_T     Token*
+#define DECLS_ONLY
+#include "generic_vec.h"
+#undef VEC_NAME
+#undef VALUE_T
+#undef DECLS_ONLY
+
 // Objects representing various scopes. Did you know C has so many different
 // scopes? You can use the same name for global variable, local variable,
 // struct/union/enum tag, and goto label!
-static Map *globalenv = &EMPTY_MAP;
-static Map *localenv;
-static Map *tags = &EMPTY_MAP;
-static Map *labels;
+static env_map *globalenv = &empty_map(env_map);
+static env_map *localenv;
+static type_map *tags = &empty_map(type_map);
+static node_map *labels;
 
-static Vector *toplevels;
-static Vector *localvars;
-static Vector *gotos;
-static Vector *cases;
+static node_vec *toplevels;
+static node_vec *localvars;
+static node_vec *gotos;
 static Type *current_func_type;
 
 static char *defaultcase;
@@ -65,20 +122,20 @@ Type *type_enum = &(Type){ KIND_ENUM, 4, 4, false };
 static Type* make_ptr_type(Type *ty);
 static Type* make_array_type(Type *ty, int size);
 static Node *read_compound_stmt(void);
-static void read_decl_or_stmt(Vector *list);
+static void read_decl_or_stmt(node_vec *list);
 static Node *conv(Node *node);
 static Node *read_stmt(void);
 static bool is_type(Token *tok);
 static Node *read_unary_expr(void);
-static void read_decl(Vector *toplevel, bool isglobal);
-static Type *read_declarator_tail(Type *basetype, Vector *params);
-static Type *read_declarator(char **name, Type *basetype, Vector *params, int ctx);
+static void read_decl(node_vec *toplevel, bool isglobal);
+static Type *read_declarator_tail(Type *basetype, node_vec *params);
+static Type *read_declarator(char **name, Type *basetype, node_vec *params, int ctx);
 static Type *read_abstract_declarator(Type *basetype);
 static Type *read_decl_spec(int *sclass);
 static Node *read_struct_field(Node *struc);
-static void read_initializer_list(Vector *inits, Type *ty, int off, bool designated);
+static void read_initializer_list(node_vec *inits, Type *ty, int off, bool designated);
 static Type *read_cast_type(void);
-static Vector *read_decl_init(Type *ty);
+static node_vec *read_decl_init(Type *ty);
 static Node *read_boolean_expr(void);
 static Node *read_expr_opt(void);
 static Node *read_conditional_expr(void);
@@ -93,6 +150,39 @@ typedef struct {
     int end;
     char *label;
 } Case;
+
+#define VEC_NAME    case_vec
+#define VALUE_T     Case*
+#include "generic_vec.h"
+#include "generic_vec.c"
+#undef VEC_NAME
+#undef VALUE_T
+
+static case_vec *cases;
+
+typedef struct {
+    Type *type;
+    Node *node;
+} TypeNodePair;
+
+#define VEC_NAME    type_node_vec
+#define VALUE_T     TypeNodePair*
+#include "generic_vec.h"
+#include "generic_vec.c"
+#undef VEC_NAME
+#undef VALUE_T
+
+typedef struct {
+    char *name;
+    Type *type;
+} NameTypePair;
+
+#define VEC_NAME    name_type_vec
+#define VALUE_T     NameTypePair*
+#include "generic_vec.h"
+#include "generic_vec.c"
+#undef VEC_NAME
+#undef VALUE_T
 
 enum {
     S_TYPEDEF = 1,
@@ -148,7 +238,7 @@ static Case *make_case(int beg, int end, char *label) {
     return r;
 }
 
-static Map *env() {
+static env_map *env() {
     return localenv ? localenv : globalenv;
 }
 
@@ -181,15 +271,15 @@ static Node *ast_floattype(Type *ty, double val) {
 static Node *ast_lvar(Type *ty, char *name) {
     Node *r = make_ast(&(Node){ AST_LVAR, ty, .varname = name });
     if (localenv)
-        map_put(localenv, name, r);
+        env_map_put(localenv, name, r);
     if (localvars)
-        vec_push(localvars, r);
+        node_vec_push(localvars, r);
     return r;
 }
 
 static Node *ast_gvar(Type *ty, char *name) {
     Node *r = make_ast(&(Node){ AST_GVAR, ty, .varname = name, .glabel = name });
-    map_put(globalenv, name, r);
+    env_map_put(globalenv, name, r);
     return r;
 }
 
@@ -200,13 +290,13 @@ static Node *ast_static_lvar(Type *ty, char *name) {
         .varname = name,
         .glabel = make_static_label(name) });
     assert(localenv);
-    map_put(localenv, name, r);
+    env_map_put(localenv, name, r);
     return r;
 }
 
 static Node *ast_typedef(Type *ty, char *name) {
     Node *r = make_ast(&(Node){ AST_TYPEDEF, ty });
-    map_put(env(), name, r);
+    env_map_put(env(), name, r);
     return r;
 }
 
@@ -237,7 +327,7 @@ static Node *ast_string(int enc, char *str, int len) {
     return make_ast(&(Node){ AST_LITERAL, .ty = ty, .sval = body });
 }
 
-static Node *ast_funcall(Type *ftype, char *fname, Vector *args) {
+static Node *ast_funcall(Type *ftype, char *fname, node_vec *args) {
     return make_ast(&(Node){
         .kind = AST_FUNCALL,
         .ty = ftype->rettype,
@@ -250,7 +340,7 @@ static Node *ast_funcdesg(Type *ty, char *fname) {
     return make_ast(&(Node){ AST_FUNCDESG, ty, .fname = fname });
 }
 
-static Node *ast_funcptr_call(Node *fptr, Vector *args) {
+static Node *ast_funcptr_call(Node *fptr, node_vec *args) {
     assert(fptr->ty->kind == KIND_PTR);
     assert(fptr->ty->ptr->kind == KIND_FUNC);
     return make_ast(&(Node){
@@ -260,7 +350,7 @@ static Node *ast_funcptr_call(Node *fptr, Vector *args) {
         .args = args });
 }
 
-static Node *ast_func(Type *ty, char *fname, Vector *params, Node *body, Vector *localvars) {
+static Node *ast_func(Type *ty, char *fname, node_vec *params, Node *body, node_vec *localvars) {
     return make_ast(&(Node){
         .kind = AST_FUNC,
         .ty = ty,
@@ -270,7 +360,7 @@ static Node *ast_func(Type *ty, char *fname, Vector *params, Node *body, Vector 
         .body = body});
 }
 
-static Node *ast_decl(Node *var, Vector *init) {
+static Node *ast_decl(Node *var, node_vec *init) {
     return make_ast(&(Node){ AST_DECL, .declvar = var, .declinit = init });
 }
 
@@ -294,7 +384,7 @@ static Node *ast_return(Node *retval) {
     return make_ast(&(Node){ AST_RETURN, .retval = retval });
 }
 
-static Node *ast_compound_stmt(Vector *stmts) {
+static Node *ast_compound_stmt(node_vec *stmts) {
     return make_ast(&(Node){ AST_COMPOUND_STMT, .stmts = stmts });
 }
 
@@ -378,7 +468,7 @@ static Type* make_rectype(bool is_struct) {
     return make_type(&(Type){ KIND_STRUCT, .is_struct = is_struct });
 }
 
-static Type* make_func_type(Type *rettype, Vector *paramtypes, bool has_varargs, bool oldstyle) {
+static Type* make_func_type(Type *rettype, type_vec *paramtypes, bool has_varargs, bool oldstyle) {
     return make_type(&(Type){
         KIND_FUNC,
         .rettype = rettype,
@@ -458,7 +548,7 @@ static Type *copy_incomplete_type(Type *ty) {
 }
 
 static Type *get_typedef(char *name) {
-    Node *node = map_get(env(), name);
+    Node *node = env_map_get(env(), name);
     return (node && node->kind == AST_TYPEDEF) ? node->ty : NULL;
 }
 
@@ -490,6 +580,20 @@ void *make_pair(void *first, void *second) {
     void **r = malloc(sizeof(void *) * 2);
     r[0] = first;
     r[1] = second;
+    return r;
+}
+
+TypeNodePair *make_type_node_pair(Type *type, Node *node) {
+    TypeNodePair *r = malloc(sizeof *r);
+    r->type = type;
+    r->node = node;
+    return r;
+}
+
+NameTypePair *make_name_type_pair(char *name, Type *type) {
+    NameTypePair *r = malloc(sizeof *r);
+    r->name = name;
+    r->type = type;
     return r;
 }
 
@@ -596,17 +700,17 @@ static bool is_same_struct(Type *a, Type *b) {
     case KIND_STRUCT: {
         if (a->is_struct != b->is_struct)
             return false;
-        Vector *ka = dict_keys(a->fields);
-        Vector *kb = dict_keys(b->fields);
-        if (vec_len(ka) != vec_len(kb))
+        key_vec *ka = type_dict_keys(a->fields);
+        key_vec *kb = type_dict_keys(b->fields);
+        if (key_vec_len(ka) != key_vec_len(kb))
             return false;
-        for (int i = 0; i < vec_len(ka); i++) {
-            char *a_name = vec_get(ka, i);
-            char *b_name = vec_get(kb, i);
+        for (int i = 0; i < key_vec_len(ka); i++) {
+            char *a_name = key_vec_get(ka, i);
+            char *b_name = key_vec_get(kb, i);
             if (strcmp(a_name, b_name) != 0)
                 return false;
-            Type *a_type = dict_get(a->fields, a_name);
-            Type *b_type = dict_get(b->fields, b_name);
+            Type *a_type = type_dict_get(a->fields, a_name);
+            Type *b_type = type_dict_get(b->fields, b_name);
             if (!is_same_struct(a_type, b_type))
                 return false;
         }
@@ -800,15 +904,15 @@ static Node *read_alignof_operand() {
  * Function arguments
  */
 
-static Vector *read_func_args(Vector *params) {
-    Vector *args = make_vector();
+static node_vec *read_func_args(type_vec *params) {
+    node_vec *args = make_node_vec();
     int i = 0;
     for (;;) {
         if (next_token(')')) break;
         Node *arg = conv(read_assignment_expr());
         Type *paramtype;
-        if (i < vec_len(params)) {
-            paramtype = vec_get(params, i++);
+        if (i < type_vec_len(params)) {
+            paramtype = type_vec_get(params, i++);
         } else {
             paramtype = is_flotype(arg->ty) ? type_double :
                 is_inttype(arg->ty) ? type_int :
@@ -817,7 +921,7 @@ static Vector *read_func_args(Vector *params) {
         ensure_assignable(paramtype, arg->ty);
         if (paramtype->kind != arg->ty->kind)
             arg = ast_conv(paramtype, arg);
-        vec_push(args, arg);
+        node_vec_push(args, arg);
         Token *tok = get();
         if (is_keyword(tok, ')')) break;
         if (!is_keyword(tok, ','))
@@ -829,10 +933,10 @@ static Vector *read_func_args(Vector *params) {
 static Node *read_funcall(Node *fp) {
     if (fp->kind == AST_ADDR && fp->operand->kind == AST_FUNCDESG) {
         Node *desg = fp->operand;
-        Vector *args = read_func_args(desg->ty->params);
+        node_vec *args = read_func_args(desg->ty->params);
         return ast_funcall(desg->ty, desg->fname, args);
     }
-    Vector *args = read_func_args(fp->ty->ptr->params);
+    node_vec *args = read_func_args(fp->ty->ptr->params);
     return ast_funcptr_call(fp, args);
 }
 
@@ -852,8 +956,8 @@ static bool type_compatible(Type *a, Type *b) {
     return true;
 }
 
-static Vector *read_generic_list(Node **defaultexpr) {
-    Vector *r = make_vector();
+static type_node_vec *read_generic_list(Node **defaultexpr) {
+    type_node_vec *r = make_type_node_vec();
     for (;;) {
         if (next_token(')'))
             return r;
@@ -867,7 +971,7 @@ static Vector *read_generic_list(Node **defaultexpr) {
             Type *ty = read_cast_type();
             expect(':');
             Node *expr = read_assignment_expr();
-            vec_push(r, make_pair(ty, expr));
+            type_node_vec_push(r, make_type_node_pair(ty, expr));
         }
         next_token(',');
     }
@@ -879,11 +983,11 @@ static Node *read_generic() {
     Node *contexpr = read_assignment_expr();
     expect(',');
     Node *defaultexpr = NULL;
-    Vector *list = read_generic_list(&defaultexpr);
-    for (int i = 0; i < vec_len(list); i++) {
-        void **pair = vec_get(list, i);
-        Type *ty = pair[0];
-        Node *expr = pair[1];
+    type_node_vec *list = read_generic_list(&defaultexpr);
+    for (int i = 0; i < type_node_vec_len(list); i++) {
+        TypeNodePair *pair = type_node_vec_get(list, i);
+        Type *ty = pair->type;
+        Node *expr = pair->node;
         if (type_compatible(contexpr->ty, ty))
             return expr;
     }
@@ -914,12 +1018,12 @@ static void read_static_assert() {
  */
 
 static Node *read_var_or_func(char *name) {
-    Node *v = map_get(env(), name);
+    Node *v = env_map_get(env(), name);
     if (!v) {
         Token *tok = peek();
         if (!is_keyword(tok, '('))
             errort(tok, "undefined variable: %s", name);
-        Type *ty = make_func_type(type_int, make_vector(), true, false);
+        Type *ty = make_func_type(type_int, make_type_vec(), true, false);
         warnt(tok, "assume returning int: %s()", name);
         return ast_funcdesg(ty, name);
     }
@@ -951,8 +1055,8 @@ static Node *read_stmt_expr() {
     Node *r = read_compound_stmt();
     expect(')');
     Type *rtype = type_void;
-    if (vec_len(r->stmts) > 0) {
-        Node *lastexpr = vec_tail(r->stmts);
+    if (node_vec_len(r->stmts) > 0) {
+        Node *lastexpr = node_vec_tail(r->stmts);
         if (lastexpr->ty)
             rtype = lastexpr->ty;
     }
@@ -1070,7 +1174,7 @@ static Node *read_label_addr(Token *tok) {
     if (tok2->kind != TIDENT)
         errort(tok, "label name expected after &&, but got %s", tok2s(tok2));
     Node *r = ast_label_addr(tok2->sval);
-    vec_push(gotos, r);
+    node_vec_push(gotos, r);
     return r;
 }
 
@@ -1136,7 +1240,7 @@ static Node *read_unary_expr() {
 
 static Node *read_compound_literal(Type *ty) {
     char *name = make_label();
-    Vector *init = read_decl_init(ty);
+    node_vec *init = read_decl_init(ty);
     Node *r = ast_lvar(ty, name);
     r->lvarinit = init;
     return r;
@@ -1334,7 +1438,7 @@ static Node *read_struct_field(Node *struc) {
     Token *name = get();
     if (name->kind != TIDENT)
         error("field name expected, but got %s", tok2s(name));
-    Type *field = dict_get(struc->ty->fields, name->sval);
+    Type *field = type_dict_get(struc->ty->fields, name->sval);
     if (!field)
         error("struct has no such field: %s", tok2s(name));
     return ast_struct_ref(field, struc, name->sval);
@@ -1352,13 +1456,13 @@ static int compute_padding(int offset, int align) {
     return (offset % align == 0) ? 0 : align - offset % align;
 }
 
-static void squash_unnamed_struct(Dict *dict, Type *unnamed, int offset) {
-    Vector *keys = dict_keys(unnamed->fields);
-    for (int i = 0; i < vec_len(keys); i++) {
-        char *name = vec_get(keys, i);
-        Type *t = copy_type(dict_get(unnamed->fields, name));
+static void squash_unnamed_struct(type_dict *dict, Type *unnamed, int offset) {
+    key_vec *keys = type_dict_keys(unnamed->fields);
+    for (int i = 0; i < key_vec_len(keys); i++) {
+        char *name = key_vec_get(keys, i);
+        Type *t = copy_type(type_dict_get(unnamed->fields, name));
         t->offset += offset;
-        dict_put(dict, name, t);
+        type_dict_put(dict, name, t);
     }
 }
 
@@ -1375,8 +1479,8 @@ static int read_bitsize(char *name, Type *ty) {
     return r;
 }
 
-static Vector *read_rectype_fields_sub() {
-    Vector *r = make_vector();
+static name_type_vec *read_rectype_fields_sub() {
+    name_type_vec *r = make_name_type_vec();
     for (;;) {
         if (next_token(KSTATIC_ASSERT)) {
             read_static_assert();
@@ -1386,7 +1490,7 @@ static Vector *read_rectype_fields_sub() {
             break;
         Type *basetype = read_decl_spec(NULL);
         if (basetype->kind == KIND_STRUCT && next_token(';')) {
-            vec_push(r, make_pair(NULL, basetype));
+            name_type_vec_push(r, make_name_type_pair(NULL, basetype));
             continue;
         }
         for (;;) {
@@ -1395,7 +1499,7 @@ static Vector *read_rectype_fields_sub() {
             ensure_not_void(fieldtype);
             fieldtype = copy_type(fieldtype);
             fieldtype->bitsize = next_token(':') ? read_bitsize(name, fieldtype) : -1;
-            vec_push(r, make_pair(name, fieldtype));
+            name_type_vec_push(r, make_name_type_pair(name, fieldtype));
             if (next_token(','))
                 continue;
             if (is_keyword(peek(), '}'))
@@ -1409,17 +1513,17 @@ static Vector *read_rectype_fields_sub() {
     return r;
 }
 
-static void fix_rectype_flexible_member(Vector *fields) {
-    for (int i = 0; i < vec_len(fields); i++) {
-        void **pair = vec_get(fields, i);
-        char *name = pair[0];
-        Type *ty = pair[1];
+static void fix_rectype_flexible_member(name_type_vec *fields) {
+    for (int i = 0; i < name_type_vec_len(fields); i++) {
+        NameTypePair *pair = name_type_vec_get(fields, i);
+        char *name = pair->name;
+        Type *ty = pair->type;
         if (ty->kind != KIND_ARRAY)
             continue;
         if (ty->len == -1) {
-            if (i != vec_len(fields) - 1)
+            if (i != name_type_vec_len(fields) - 1)
                 error("flexible member may only appear as the last member: %s %s", ty2s(ty), name);
-            if (vec_len(fields) == 1)
+            if (name_type_vec_len(fields) == 1)
                 error("flexible member with no other fields: %s %s", ty2s(ty), name);
             ty->len = 0;
             ty->size = 0;
@@ -1432,13 +1536,13 @@ static void finish_bitfield(int *off, int *bitoff) {
     *bitoff = 0;
 }
 
-static Dict *update_struct_offset(int *rsize, int *align, Vector *fields) {
+static type_dict *update_struct_offset(int *rsize, int *align, name_type_vec *fields) {
     int off = 0, bitoff = 0;
-    Dict *r = make_dict();
-    for (int i = 0; i < vec_len(fields); i++) {
-        void **pair = vec_get(fields, i);
-        char *name = pair[0];
-        Type *fieldtype = pair[1];
+    type_dict *r = make_type_dict();
+    for (int i = 0; i < name_type_vec_len(fields); i++) {
+        NameTypePair *pair = name_type_vec_get(fields, i);
+        char *name = pair->name;
+        Type *fieldtype = pair->type;
         // C11 6.7.2.1p14: Each member is aligned to its natural boundary.
         // As a result the entire struct is aligned to the largest among its members.
         // Unnamed fields will never be accessed, so they shouldn't be taken into account
@@ -1482,20 +1586,20 @@ static Dict *update_struct_offset(int *rsize, int *align, Vector *fields) {
             off += fieldtype->size;
         }
         if (name)
-            dict_put(r, name, fieldtype);
+            type_dict_put(r, name, fieldtype);
     }
     finish_bitfield(&off, &bitoff);
     *rsize = off + compute_padding(off, *align);
     return r;
 }
 
-static Dict *update_union_offset(int *rsize, int *align, Vector *fields) {
+static type_dict *update_union_offset(int *rsize, int *align, name_type_vec *fields) {
     int maxsize = 0;
-    Dict *r = make_dict();
-    for (int i = 0; i < vec_len(fields); i++) {
-        void **pair = vec_get(fields, i);
-        char *name = pair[0];
-        Type *fieldtype = pair[1];
+    type_dict *r = make_type_dict();
+    for (int i = 0; i < name_type_vec_len(fields); i++) {
+        NameTypePair *pair = name_type_vec_get(fields, i);
+        char *name = pair->name;
+        Type *fieldtype = pair->type;
         maxsize = MAX(maxsize, fieldtype->size);
         *align = MAX(*align, fieldtype->align);
         if (name == NULL && fieldtype->kind == KIND_STRUCT) {
@@ -1506,16 +1610,16 @@ static Dict *update_union_offset(int *rsize, int *align, Vector *fields) {
         if (fieldtype->bitsize >= 0)
             fieldtype->bitoff = 0;
         if (name)
-            dict_put(r, name, fieldtype);
+            type_dict_put(r, name, fieldtype);
     }
     *rsize = maxsize + compute_padding(maxsize, *align);
     return r;
 }
 
-static Dict *read_rectype_fields(int *rsize, int *align, bool is_struct) {
+static type_dict *read_rectype_fields(int *rsize, int *align, bool is_struct) {
     if (!next_token('{'))
         return NULL;
-    Vector *fields = read_rectype_fields_sub();
+    name_type_vec *fields = read_rectype_fields_sub();
     fix_rectype_flexible_member(fields);
     if (is_struct)
         return update_struct_offset(rsize, align, fields);
@@ -1526,18 +1630,18 @@ static Type *read_rectype_def(bool is_struct) {
     char *tag = read_rectype_tag();
     Type *r;
     if (tag) {
-        r = map_get(tags, tag);
+        r = type_map_get(tags, tag);
         if (r && (r->kind == KIND_ENUM || r->is_struct != is_struct))
             error("declarations of %s does not match", tag);
         if (!r) {
             r = make_rectype(is_struct);
-            map_put(tags, tag, r);
+            type_map_put(tags, tag, r);
         }
     } else {
         r = make_rectype(is_struct);
     }
     int size = 0, align = 1;
-    Dict *fields = read_rectype_fields(&size, &align, is_struct);
+    type_dict *fields = read_rectype_fields(&size, &align, is_struct);
     r->align = align;
     if (fields) {
         r->fields = fields;
@@ -1569,18 +1673,18 @@ static Type *read_enum_def() {
         tok = get();
     }
     if (tag) {
-        Type *ty = map_get(tags, tag);
+        Type *ty = type_map_get(tags, tag);
         if (ty && ty->kind != KIND_ENUM)
             errort(tok, "declarations of %s does not match", tag);
     }
     if (!is_keyword(tok, '{')) {
-        if (!tag || !map_get(tags, tag))
+        if (!tag || !type_map_get(tags, tag))
             errort(tok, "enum tag %s is not defined", tag);
         unget_token(tok);
         return type_int;
     }
     if (tag)
-        map_put(tags, tag, type_enum);
+        type_map_put(tags, tag, type_enum);
 
     int val = 0;
     for (;;) {
@@ -1594,7 +1698,7 @@ static Type *read_enum_def() {
         if (next_token('='))
             val = read_intexpr();
         Node *constval = ast_inttype(type_int, val++);
-        map_put(env(), name, constval);
+        env_map_put(env(), name, constval);
         if (next_token(','))
             continue;
         if (next_token('}'))
@@ -1608,14 +1712,14 @@ static Type *read_enum_def() {
  * Initializer
  */
 
-static void assign_string(Vector *inits, Type *ty, char *p, int off) {
+static void assign_string(node_vec *inits, Type *ty, char *p, int off) {
     if (ty->len == -1)
         ty->len = ty->size = strlen(p) + 1;
     int i = 0;
     for (; i < ty->len && *p; i++)
-        vec_push(inits, ast_init(ast_inttype(type_char, *p++), type_char, off + i));
+        node_vec_push(inits, ast_init(ast_inttype(type_char, *p++), type_char, off + i));
     for (; i < ty->len; i++)
-        vec_push(inits, ast_init(ast_inttype(type_char, 0), type_char, off + i));
+        node_vec_push(inits, ast_init(ast_inttype(type_char, 0), type_char, off + i));
 }
 
 static bool maybe_read_brace() {
@@ -1643,7 +1747,7 @@ static void skip_to_brace() {
     }
 }
 
-static void read_initializer_elem(Vector *inits, Type *ty, int off, bool designated) {
+static void read_initializer_elem(node_vec *inits, Type *ty, int off, bool designated) {
     bool ident = (peek()-> kind == TIDENT);
     next_token('=');
     if (!ident && (ty->kind == KIND_ARRAY || ty->kind == KIND_STRUCT)) {
@@ -1654,7 +1758,7 @@ static void read_initializer_elem(Vector *inits, Type *ty, int off, bool designa
     } else {
         Node *expr = conv(read_assignment_expr());
         ensure_assignable(ty, expr->ty);
-        vec_push(inits, ast_init(expr, ty, off));
+        node_vec_push(inits, ast_init(expr, ty, off));
     }
 }
 
@@ -1666,13 +1770,13 @@ static int comp_init(const void *p, const void *q) {
     return 0;
 }
 
-static void sort_inits(Vector *inits) {
-    qsort(vec_body(inits), vec_len(inits), sizeof(void *), comp_init);
+static void sort_inits(node_vec *inits) {
+    qsort(node_vec_body(inits), node_vec_len(inits), sizeof(Node *), comp_init);
 }
 
-static void read_struct_initializer_sub(Vector *inits, Type *ty, int off, bool designated) {
+static void read_struct_initializer_sub(node_vec *inits, Type *ty, int off, bool designated) {
     bool has_brace = maybe_read_brace();
-    Vector *keys = dict_keys(ty->fields);
+    key_vec *keys = type_dict_keys(ty->fields);
     int i = 0;
     for (;;) {
         Token *tok = get();
@@ -1692,23 +1796,23 @@ static void read_struct_initializer_sub(Vector *inits, Type *ty, int off, bool d
             if (!tok || tok->kind != TIDENT)
                 errort(tok, "malformed desginated initializer: %s", tok2s(tok));
             fieldname = tok->sval;
-            fieldtype = dict_get(ty->fields, fieldname);
+            fieldtype = type_dict_get(ty->fields, fieldname);
             if (!fieldtype)
                 errort(tok, "field does not exist: %s", tok2s(tok));
-            keys = dict_keys(ty->fields);
+            keys = type_dict_keys(ty->fields);
             i = 0;
-            while (i < vec_len(keys)) {
-                char *s = vec_get(keys, i++);
+            while (i < key_vec_len(keys)) {
+                char *s = key_vec_get(keys, i++);
                 if (strcmp(fieldname, s) == 0)
                     break;
             }
             designated = true;
         } else {
             unget_token(tok);
-            if (i == vec_len(keys))
+            if (i == key_vec_len(keys))
                 break;
-            fieldname = vec_get(keys, i++);
-            fieldtype = dict_get(ty->fields, fieldname);
+            fieldname = key_vec_get(keys, i++);
+            fieldtype = type_dict_get(ty->fields, fieldname);
         }
         read_initializer_elem(inits, fieldtype, off + fieldtype->offset, designated);
         maybe_skip_comma();
@@ -1720,12 +1824,12 @@ static void read_struct_initializer_sub(Vector *inits, Type *ty, int off, bool d
         skip_to_brace();
 }
 
-static void read_struct_initializer(Vector *inits, Type *ty, int off, bool designated) {
+static void read_struct_initializer(node_vec *inits, Type *ty, int off, bool designated) {
     read_struct_initializer_sub(inits, ty, off, designated);
     sort_inits(inits);
 }
 
-static void read_array_initializer_sub(Vector *inits, Type *ty, int off, bool designated) {
+static void read_array_initializer_sub(node_vec *inits, Type *ty, int off, bool designated) {
     bool has_brace = maybe_read_brace();
     bool flexible = (ty->len <= 0);
     int elemsize = ty->ptr->size;
@@ -1765,12 +1869,12 @@ static void read_array_initializer_sub(Vector *inits, Type *ty, int off, bool de
     }
 }
 
-static void read_array_initializer(Vector *inits, Type *ty, int off, bool designated) {
+static void read_array_initializer(node_vec *inits, Type *ty, int off, bool designated) {
     read_array_initializer_sub(inits, ty, off, designated);
     sort_inits(inits);
 }
 
-static void read_initializer_list(Vector *inits, Type *ty, int off, bool designated) {
+static void read_initializer_list(node_vec *inits, Type *ty, int off, bool designated) {
     Token *tok = get();
     if (is_string(ty)) {
         if (tok->kind == TSTRING) {
@@ -1795,15 +1899,15 @@ static void read_initializer_list(Vector *inits, Type *ty, int off, bool designa
     }
 }
 
-static Vector *read_decl_init(Type *ty) {
-    Vector *r = make_vector();
+static node_vec *read_decl_init(Type *ty) {
+    node_vec *r = make_node_vec();
     if (is_keyword(peek(), '{') || is_string(ty)) {
         read_initializer_list(r, ty, 0, false);
     } else {
         Node *init = conv(read_assignment_expr());
         if (is_arithtype(init->ty) && init->ty->kind != ty->kind)
             init = ast_conv(ty, init);
-        vec_push(r, ast_init(init, ty, 0));
+        node_vec_push(r, ast_init(init, ty, 0));
     }
     return r;
 }
@@ -1848,13 +1952,13 @@ static Type *read_func_param(char **name, bool optional) {
 }
 
 // Reads an ANSI-style prototyped function parameter list.
-static void read_declarator_params(Vector *types, Vector *vars, bool *ellipsis) {
+static void read_declarator_params(type_vec *types, node_vec *vars, bool *ellipsis) {
     bool typeonly = !vars;
     *ellipsis = false;
     for (;;) {
         Token *tok = peek();
         if (next_token(KELLIPSIS)) {
-            if (vec_len(types) == 0)
+            if (type_vec_len(types) == 0)
                 errort(tok, "at least one parameter is required before \"...\"");
             expect(')');
             *ellipsis = true;
@@ -1863,9 +1967,9 @@ static void read_declarator_params(Vector *types, Vector *vars, bool *ellipsis) 
         char *name;
         Type *ty = read_func_param(&name, typeonly);
         ensure_not_void(ty);
-        vec_push(types, ty);
+        type_vec_push(types, ty);
         if (!typeonly)
-            vec_push(vars, ast_lvar(ty, name));
+            node_vec_push(vars, ast_lvar(ty, name));
         tok = get();
         if (is_keyword(tok, ')'))
             return;
@@ -1875,12 +1979,12 @@ static void read_declarator_params(Vector *types, Vector *vars, bool *ellipsis) 
 }
 
 // Reads a K&R-style un-prototyped function parameter list.
-static void read_declarator_params_oldstyle(Vector *vars) {
+static void read_declarator_params_oldstyle(node_vec *vars) {
     for (;;) {
         Token *tok = get();
         if (tok->kind != TIDENT)
             errort(tok, "identifier expected, but got %s", tok2s(tok));
-        vec_push(vars, ast_lvar(type_int, tok->sval));
+        node_vec_push(vars, ast_lvar(type_int, tok->sval));
         if (next_token(')'))
             return;
         if (!next_token(','))
@@ -1888,19 +1992,19 @@ static void read_declarator_params_oldstyle(Vector *vars) {
     }
 }
 
-static Type *read_func_param_list(Vector *paramvars, Type *rettype) {
+static Type *read_func_param_list(node_vec *paramvars, Type *rettype) {
     // C11 6.7.6.3p10: A parameter list with just "void" specifies that
     // the function has no parameters.
     Token *tok = get();
     if (is_keyword(tok, KVOID) && next_token(')'))
-        return make_func_type(rettype, make_vector(), false, false);
+        return make_func_type(rettype, make_type_vec(), false, false);
 
     // C11 6.7.6.3p14: K&R-style un-prototyped declaration or
     // function definition having no parameters.
     // We return a type representing K&R-style declaration here.
     // If this is actually part of a declartion, the type will be fixed later.
     if (is_keyword(tok, ')'))
-        return make_func_type(rettype, make_vector(), true, true);
+        return make_func_type(rettype, make_type_vec(), true, true);
     unget_token(tok);
 
     Token *tok2 = peek();
@@ -1908,16 +2012,16 @@ static Type *read_func_param_list(Vector *paramvars, Type *rettype) {
         errort(tok2, "at least one parameter is required before \"...\"");
     if (is_type(peek())) {
         bool ellipsis;
-        Vector *paramtypes = make_vector();
+        type_vec *paramtypes = make_type_vec();
         read_declarator_params(paramtypes, paramvars, &ellipsis);
         return make_func_type(rettype, paramtypes, ellipsis, false);
     }
     if (!paramvars)
         errort(tok, "invalid function definition");
     read_declarator_params_oldstyle(paramvars);
-    Vector *paramtypes = make_vector();
-    for (int i = 0; i < vec_len(paramvars); i++)
-        vec_push(paramtypes, type_int);
+    type_vec *paramtypes = make_type_vec();
+    for (int i = 0; i < node_vec_len(paramvars); i++)
+        type_vec_push(paramtypes, type_int);
     return make_func_type(rettype, paramtypes, false, true);
 }
 
@@ -1936,7 +2040,7 @@ static Type *read_declarator_array(Type *basety) {
     return make_array_type(t, len);
 }
 
-static Type *read_declarator_func(Type *basety, Vector *param) {
+static Type *read_declarator_func(Type *basety, node_vec *param) {
     if (basety->kind == KIND_FUNC)
         error("function returning a function");
     if (basety->kind == KIND_ARRAY)
@@ -1944,7 +2048,7 @@ static Type *read_declarator_func(Type *basety, Vector *param) {
     return read_func_param_list(param, basety);
 }
 
-static Type *read_declarator_tail(Type *basety, Vector *params) {
+static Type *read_declarator_tail(Type *basety, node_vec *params) {
     if (next_token('['))
         return read_declarator_array(basety);
     if (next_token('('))
@@ -1957,7 +2061,7 @@ static void skip_type_qualifiers() {
 }
 
 // C11 6.7.6: Declarators
-static Type *read_declarator(char **rname, Type *basety, Vector *params, int ctx) {
+static Type *read_declarator(char **rname, Type *basety, node_vec *params, int ctx) {
     if (next_token('(')) {
         // '(' is either beginning of grouping parentheses or of a function parameter list.
         // If the next token is a type name, a parameter list must follow.
@@ -2160,14 +2264,14 @@ static Type *read_decl_spec(int *rsclass) {
 
 static void read_static_local_var(Type *ty, char *name) {
     Node *var = ast_static_lvar(ty, name);
-    Vector *init = NULL;
+    node_vec *init = NULL;
     if (next_token('=')) {
-        Map *orig = localenv;
+        env_map *orig = localenv;
         localenv = NULL;
         init = read_decl_init(ty);
         localenv = orig;
     }
-    vec_push(toplevels, ast_decl(var, init));
+    node_vec_push(toplevels, ast_decl(var, init));
 }
 
 static Type *read_decl_spec_opt(int *sclass) {
@@ -2177,7 +2281,7 @@ static Type *read_decl_spec_opt(int *sclass) {
     return type_int;
 }
 
-static void read_decl(Vector *block, bool isglobal) {
+static void read_decl(node_vec *block, bool isglobal) {
     int sclass = 0;
     Type *basetype = read_decl_spec_opt(&sclass);
     if (next_token(';'))
@@ -2195,9 +2299,9 @@ static void read_decl(Vector *block, bool isglobal) {
             ensure_not_void(ty);
             Node *var = (isglobal ? ast_gvar : ast_lvar)(ty, name);
             if (next_token('=')) {
-                vec_push(block, ast_decl(var, read_decl_init(ty)));
+                node_vec_push(block, ast_decl(var, read_decl_init(ty)));
             } else if (sclass != S_EXTERN && ty->kind != KIND_FUNC) {
-                vec_push(block, ast_decl(var, NULL));
+                node_vec_push(block, ast_decl(var, NULL));
             }
         }
         if (next_token(';'))
@@ -2211,10 +2315,10 @@ static void read_decl(Vector *block, bool isglobal) {
  * K&R-style parameter types
  */
 
-static Vector *read_oldstyle_param_args() {
-    Map *orig = localenv;
+static node_vec *read_oldstyle_param_args() {
+    env_map *orig = localenv;
     localenv = NULL;
-    Vector *r = make_vector();
+    node_vec *r = make_node_vec();
     for (;;) {
         if (is_keyword(peek(), '{'))
             break;
@@ -2226,14 +2330,14 @@ static Vector *read_oldstyle_param_args() {
     return r;
 }
 
-static void update_oldstyle_param_type(Vector *params, Vector *vars) {
-    for (int i = 0; i < vec_len(vars); i++) {
-        Node *decl = vec_get(vars, i);
+static void update_oldstyle_param_type(node_vec *params, node_vec *vars) {
+    for (int i = 0; i < node_vec_len(vars); i++) {
+        Node *decl = node_vec_get(vars, i);
         assert(decl->kind == AST_DECL);
         Node *var = decl->declvar;
         assert(var->kind == AST_LVAR);
-        for (int j = 0; j < vec_len(params); j++) {
-            Node *param = vec_get(params, j);
+        for (int j = 0; j < node_vec_len(params); j++) {
+            Node *param = node_vec_get(params, j);
             assert(param->kind == AST_LVAR);
             if (strcmp(param->varname, var->varname))
                 continue;
@@ -2245,16 +2349,16 @@ static void update_oldstyle_param_type(Vector *params, Vector *vars) {
     }
 }
 
-static void read_oldstyle_param_type(Vector *params) {
-    Vector *vars = read_oldstyle_param_args();
+static void read_oldstyle_param_type(node_vec *params) {
+    node_vec *vars = read_oldstyle_param_args();
     update_oldstyle_param_type(params, vars);
 }
 
-static Vector *param_types(Vector *params) {
-    Vector *r = make_vector();
-    for (int i = 0; i < vec_len(params); i++) {
-        Node *param = vec_get(params, i);
-        vec_push(r, param->ty);
+static type_vec *param_types(node_vec *params) {
+    type_vec *r = make_type_vec();
+    for (int i = 0; i < node_vec_len(params); i++) {
+        Node *param = node_vec_get(params, i);
+        type_vec_push(r, param->ty);
     }
     return r;
 }
@@ -2263,13 +2367,13 @@ static Vector *param_types(Vector *params) {
  * Function definition
  */
 
-static Node *read_func_body(Type *functype, char *fname, Vector *params) {
-    localenv = make_map_parent(localenv);
-    localvars = make_vector();
+static Node *read_func_body(Type *functype, char *fname, node_vec *params) {
+    localenv = make_env_map_parent(localenv);
+    localvars = make_node_vec();
     current_func_type = functype;
     Node *funcname = ast_string(ENC_NONE, fname, strlen(fname) + 1);
-    map_put(localenv, "__func__", funcname);
-    map_put(localenv, "__FUNCTION__", funcname);
+    env_map_put(localenv, "__func__", funcname);
+    env_map_put(localenv, "__FUNCTION__", funcname);
     Node *body = read_compound_stmt();
     Node *r = ast_func(functype, fname, params, body, localvars);
     current_func_type = NULL;
@@ -2278,12 +2382,12 @@ static Node *read_func_body(Type *functype, char *fname, Vector *params) {
     return r;
 }
 
-static void skip_parentheses(Vector *buf) {
+static void skip_parentheses(token_vec *buf) {
     for (;;) {
         Token *tok = get();
         if (tok->kind == TEOF)
             error("premature end of input");
-        vec_push(buf, tok);
+        token_vec_push(buf, tok);
         if (is_keyword(tok, ')'))
             return;
         if (is_keyword(tok, '('))
@@ -2297,11 +2401,11 @@ static void skip_parentheses(Vector *buf) {
 // definition. (Usually '{' comes after a closing parenthesis.
 // A type keyword is allowed for K&R-style function definitions.)
 static bool is_funcdef() {
-    Vector *buf = make_vector();
+    token_vec *buf = make_token_vec();
     bool r = false;
     for (;;) {
         Token *tok = get();
-        vec_push(buf, tok);
+        token_vec_push(buf, tok);
         if (tok->kind == TEOF)
             error("premature end of input");
         if (is_keyword(tok, ';'))
@@ -2316,21 +2420,21 @@ static bool is_funcdef() {
             continue;
         if (!is_keyword(peek(), '('))
             continue;
-        vec_push(buf, get());
+        token_vec_push(buf, get());
         skip_parentheses(buf);
         r = (is_keyword(peek(), '{') || is_type(peek()));
         break;
     }
-    while (vec_len(buf) > 0)
-        unget_token(vec_pop(buf));
+    while (token_vec_len(buf) > 0)
+        unget_token(token_vec_pop(buf));
     return r;
 }
 
 static void backfill_labels() {
-    for (int i = 0; i < vec_len(gotos); i++) {
-        Node *src = vec_get(gotos, i);
+    for (int i = 0; i < node_vec_len(gotos); i++) {
+        Node *src = node_vec_get(gotos, i);
         char *label = src->label;
-        Node *dst = map_get(labels, label);
+        Node *dst = node_map_get(labels, label);
         if (!dst)
             error("stray %s: %s", src->kind == AST_GOTO ? "goto" : "unary &&", label);
         if (dst->newlabel)
@@ -2343,14 +2447,14 @@ static void backfill_labels() {
 static Node *read_funcdef() {
     int sclass = 0;
     Type *basetype = read_decl_spec_opt(&sclass);
-    localenv = make_map_parent(globalenv);
-    gotos = make_vector();
-    labels = make_map();
+    localenv = make_env_map_parent(globalenv);
+    gotos = make_node_vec();
+    labels = make_node_map();
     char *name;
-    Vector *params = make_vector();
+    node_vec *params = make_node_vec();
     Type *functype = read_declarator(&name, basetype, params, DECL_BODY);
     if (functype->oldstyle) {
-        if (vec_len(params) == 0)
+        if (node_vec_len(params) == 0)
             functype->hasva = false;
         read_oldstyle_param_type(params);
         functype->params = param_types(params);
@@ -2391,7 +2495,7 @@ static Node *read_if_stmt() {
 static Node *read_opt_decl_or_stmt() {
     if (next_token(';'))
         return NULL;
-    Vector *list = make_vector();
+    node_vec *list = make_node_vec();
     read_decl_or_stmt(list);
     return ast_compound_stmt(list);
 }
@@ -2411,8 +2515,8 @@ static Node *read_for_stmt() {
     char *beg = make_label();
     char *mid = make_label();
     char *end = make_label();
-    Map *orig = localenv;
-    localenv = make_map_parent(localenv);
+    env_map *orig = localenv;
+    localenv = make_env_map_parent(localenv);
     Node *init = read_opt_decl_or_stmt();
     Node *cond = read_expr_opt();
     if (cond && is_flotype(cond->ty))
@@ -2425,19 +2529,19 @@ static Node *read_for_stmt() {
     RESTORE_JUMP_LABELS();
     localenv = orig;
 
-    Vector *v = make_vector();
+    node_vec *v = make_node_vec();
     if (init)
-        vec_push(v, init);
-    vec_push(v, ast_dest(beg));
+        node_vec_push(v, init);
+    node_vec_push(v, ast_dest(beg));
     if (cond)
-        vec_push(v, ast_if(cond, NULL, ast_jump(end)));
+        node_vec_push(v, ast_if(cond, NULL, ast_jump(end)));
     if (body)
-        vec_push(v, body);
-    vec_push(v, ast_dest(mid));
+        node_vec_push(v, body);
+    node_vec_push(v, ast_dest(mid));
     if (step)
-        vec_push(v, step);
-    vec_push(v, ast_jump(beg));
-    vec_push(v, ast_dest(end));
+        node_vec_push(v, step);
+    node_vec_push(v, ast_jump(beg));
+    node_vec_push(v, ast_dest(end));
     return ast_compound_stmt(v);
 }
 
@@ -2456,11 +2560,11 @@ static Node *read_while_stmt() {
     Node *body = read_stmt();
     RESTORE_JUMP_LABELS();
 
-    Vector *v = make_vector();
-    vec_push(v, ast_dest(beg));
-    vec_push(v, ast_if(cond, body, ast_jump(end)));
-    vec_push(v, ast_jump(beg));
-    vec_push(v, ast_dest(end));
+    node_vec *v = make_node_vec();
+    node_vec_push(v, ast_dest(beg));
+    node_vec_push(v, ast_if(cond, body, ast_jump(end)));
+    node_vec_push(v, ast_jump(beg));
+    node_vec_push(v, ast_dest(end));
     return ast_compound_stmt(v);
 }
 
@@ -2482,12 +2586,12 @@ static Node *read_do_stmt() {
     expect(')');
     expect(';');
 
-    Vector *v = make_vector();
-    vec_push(v, ast_dest(beg));
+    node_vec *v = make_node_vec();
+    node_vec_push(v, ast_dest(beg));
     if (body)
-        vec_push(v, body);
-    vec_push(v, ast_if(cond, ast_jump(beg), NULL));
-    vec_push(v, ast_dest(end));
+        node_vec_push(v, body);
+    node_vec_push(v, ast_if(cond, ast_jump(beg), NULL));
+    node_vec_push(v, ast_dest(end));
     return ast_compound_stmt(v);
 }
 
@@ -2509,11 +2613,11 @@ static Node *make_switch_jump(Node *var, Case *c) {
 }
 
 // C11 6.8.4.2p3: No two case constant expressions have the same value.
-static void check_case_duplicates(Vector *cases) {
-    int len = vec_len(cases);
-    Case *x = vec_get(cases, len - 1);
+static void check_case_duplicates(case_vec *cases) {
+    int len = case_vec_len(cases);
+    Case *x = case_vec_get(cases, len - 1);
     for (int i = 0; i < len - 1; i++) {
-        Case *y = vec_get(cases, i);
+        Case *y = case_vec_get(cases, i);
         if (x->end < y->beg || y->end < x->beg)
             continue;
         if (x->beg == x->end)
@@ -2523,10 +2627,10 @@ static void check_case_duplicates(Vector *cases) {
 }
 
 #define SET_SWITCH_CONTEXT(brk)                 \
-    Vector *ocases = cases;                     \
+    case_vec *ocases = cases;                   \
     char *odefaultcase = defaultcase;           \
     char *obreak = lbreak;                      \
-    cases = make_vector();                      \
+    cases = make_case_vec();                    \
     defaultcase = NULL;                         \
     lbreak = brk
 
@@ -2544,25 +2648,25 @@ static Node *read_switch_stmt() {
     char *end = make_label();
     SET_SWITCH_CONTEXT(end);
     Node *body = read_stmt();
-    Vector *v = make_vector();
+    node_vec *v = make_node_vec();
     Node *var = ast_lvar(expr->ty, make_tempname());
-    vec_push(v, ast_binop(expr->ty, '=', var, expr));
-    for (int i = 0; i < vec_len(cases); i++)
-        vec_push(v, make_switch_jump(var, vec_get(cases, i)));
-    vec_push(v, ast_jump(defaultcase ? defaultcase : end));
+    node_vec_push(v, ast_binop(expr->ty, '=', var, expr));
+    for (int i = 0; i < case_vec_len(cases); i++)
+        node_vec_push(v, make_switch_jump(var, case_vec_get(cases, i)));
+    node_vec_push(v, ast_jump(defaultcase ? defaultcase : end));
     if (body)
-        vec_push(v, body);
-    vec_push(v, ast_dest(end));
+        node_vec_push(v, body);
+    node_vec_push(v, ast_dest(end));
     RESTORE_SWITCH_CONTEXT();
     return ast_compound_stmt(v);
 }
 
 static Node *read_label_tail(Node *label) {
     Node *stmt = read_stmt();
-    Vector *v = make_vector();
-    vec_push(v, label);
+    node_vec *v = make_node_vec();
+    node_vec_push(v, label);
     if (stmt)
-        vec_push(v, stmt);
+        node_vec_push(v, stmt);
     return ast_compound_stmt(v);
 }
 
@@ -2576,10 +2680,10 @@ static Node *read_case_label(Token *tok) {
         expect(':');
         if (beg > end)
             errort(tok, "case region is not in correct order: %d ... %d", beg, end);
-        vec_push(cases, make_case(beg, end, label));
+        case_vec_push(cases, make_case(beg, end, label));
     } else {
         expect(':');
-        vec_push(cases, make_case(beg, beg, label));
+        case_vec_push(cases, make_case(beg, beg, label));
     }
     check_case_duplicates(cases);
     return read_label_tail(ast_dest(label));
@@ -2633,16 +2737,16 @@ static Node *read_goto_stmt() {
         errort(tok, "identifier expected, but got %s", tok2s(tok));
     expect(';');
     Node *r = ast_goto(tok->sval);
-    vec_push(gotos, r);
+    node_vec_push(gotos, r);
     return r;
 }
 
 static Node *read_label(Token *tok) {
     char *label = tok->sval;
-    if (map_get(labels, label))
+    if (node_map_get(labels, label))
         errort(tok, "duplicate label: %s", tok2s(tok));
     Node *r = ast_label(label);
-    map_put(labels, label, r);
+    node_map_put(labels, label, r);
     return read_label_tail(r);
 }
 
@@ -2677,9 +2781,9 @@ static Node *read_stmt() {
 }
 
 static Node *read_compound_stmt() {
-    Map *orig = localenv;
-    localenv = make_map_parent(localenv);
-    Vector *list = make_vector();
+    env_map *orig = localenv;
+    localenv = make_env_map_parent(localenv);
+    node_vec *list = make_node_vec();
     for (;;) {
         if (next_token('}'))
             break;
@@ -2689,7 +2793,7 @@ static Node *read_compound_stmt() {
     return ast_compound_stmt(list);
 }
 
-static void read_decl_or_stmt(Vector *list) {
+static void read_decl_or_stmt(node_vec *list) {
     Token *tok = peek();
     if (tok->kind == TEOF)
         error("premature end of input");
@@ -2701,7 +2805,7 @@ static void read_decl_or_stmt(Vector *list) {
     } else {
         Node *stmt = read_stmt();
         if (stmt)
-            vec_push(list, stmt);
+            node_vec_push(list, stmt);
     }
 }
 
@@ -2709,13 +2813,13 @@ static void read_decl_or_stmt(Vector *list) {
  * Compilation unit
  */
 
-Vector *read_toplevels() {
-    toplevels = make_vector();
+node_vec *read_toplevels() {
+    toplevels = make_node_vec();
     for (;;) {
         if (peek()->kind == TEOF)
             return toplevels;
         if (is_funcdef())
-            vec_push(toplevels, read_funcdef());
+            node_vec_push(toplevels, read_funcdef());
         else
             read_decl(toplevels, true);
     }
@@ -2762,15 +2866,15 @@ static Token *peek() {
  * Initializer
  */
 
-static void define_builtin(char *name, Type *rettype, Vector *paramtypes) {
+static void define_builtin(char *name, Type *rettype, type_vec *paramtypes) {
     ast_gvar(make_func_type(rettype, paramtypes, true, false), name);
 }
 
 void parse_init() {
-    Vector *voidptr = make_vector1(make_ptr_type(type_void));
-    Vector *two_voidptrs = make_vector();
-    vec_push(two_voidptrs, make_ptr_type(type_void));
-    vec_push(two_voidptrs, make_ptr_type(type_void));
+    type_vec *voidptr = make_type_vec_1(make_ptr_type(type_void));
+    type_vec *two_voidptrs = make_type_vec();
+    type_vec_push(two_voidptrs, make_ptr_type(type_void));
+    type_vec_push(two_voidptrs, make_ptr_type(type_void));
     define_builtin("__builtin_return_address", make_ptr_type(type_void), voidptr);
     define_builtin("__builtin_reg_class", type_int, voidptr);
     define_builtin("__builtin_va_arg", type_void, two_voidptrs);

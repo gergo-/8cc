@@ -24,8 +24,25 @@
 #include <unistd.h>
 #include "8cc.h"
 
-static Vector *files = &EMPTY_VECTOR;
-static Vector *stashed = &EMPTY_VECTOR;
+// A vector of files.
+#define VEC_NAME    file_vec
+#define VALUE_T     File*
+#include "generic_vec.h"
+#include "generic_vec.c"
+#undef VEC_NAME
+#undef VALUE_T
+
+static file_vec *files = &empty_vector(file_vec);
+
+// A stack of vectors of files
+#define VEC_NAME    file_vec_stack
+#define VALUE_T     file_vec*
+#include "generic_vec.h"
+#include "generic_vec.c"
+#undef VEC_NAME
+#undef VALUE_T
+
+static file_vec_stack *stashed = &empty_vector(file_vec_stack);
 
 File *make_file(FILE *file, char *name) {
     File *r = calloc(1, sizeof(File));
@@ -84,7 +101,7 @@ static int readc_string(File *f) {
 }
 
 static int get() {
-    File *f = vec_tail(files);
+    File *f = file_vec_tail(files);
     int c;
     if (f->buflen > 0) {
         c = f->buf[--f->buflen];
@@ -106,9 +123,9 @@ int readc() {
     for (;;) {
         int c = get();
         if (c == EOF) {
-            if (vec_len(files) == 1)
+            if (file_vec_len(files) == 1)
                 return c;
-            close_file(vec_pop(files));
+            close_file(file_vec_pop(files));
             continue;
         }
         if (c != '\\')
@@ -124,7 +141,7 @@ int readc() {
 void unreadc(int c) {
     if (c == EOF)
         return;
-    File *f = vec_tail(files);
+    File *f = file_vec_tail(files);
     assert(f->buflen < sizeof(f->buf) / sizeof(f->buf[0]));
     f->buf[f->buflen++] = c;
     if (c == '\n') {
@@ -136,29 +153,29 @@ void unreadc(int c) {
 }
 
 File *current_file() {
-    return vec_tail(files);
+    return file_vec_tail(files);
 }
 
 void stream_push(File *f) {
-    vec_push(files, f);
+    file_vec_push(files, f);
 }
 
 int stream_depth() {
-    return vec_len(files);
+    return file_vec_len(files);
 }
 
 char *input_position() {
-    if (vec_len(files) == 0)
+    if (file_vec_len(files) == 0)
         return "(unknown)";
-    File *f = vec_tail(files);
+    File *f = file_vec_tail(files);
     return format("%s:%d:%d", f->name, f->line, f->column);
 }
 
 void stream_stash(File *f) {
-    vec_push(stashed, files);
-    files = make_vector1(f);
+    file_vec_stack_push(stashed, files);
+    files = make_file_vec_1(f);
 }
 
 void stream_unstash() {
-    files = vec_pop(stashed);
+    files = file_vec_stack_pop(stashed);
 }

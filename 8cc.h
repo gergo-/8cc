@@ -48,9 +48,17 @@ typedef struct {
     int nalloc;
 } Vector;
 
+#define VEC_NAME    key_vec
+#define VALUE_T     char*
+#define DECLS_ONLY
+#include "generic_vec.h"
+#undef VEC_NAME
+#undef VALUE_T
+#undef DECLS_ONLY
+
 typedef struct {
     struct Map *map;
-    Vector *key;
+    key_vec *key;
 } Dict;
 
 typedef struct Set {
@@ -165,7 +173,36 @@ enum {
     KIND_STUB,
 };
 
-typedef struct Type {
+struct Type;
+typedef struct Type Type;
+
+#define VEC_NAME    type_vec
+#define VALUE_T     Type*
+#define DECLS_ONLY
+#include "generic_vec.h"
+#undef VEC_NAME
+#undef VALUE_T
+#undef DECLS_ONLY
+
+#define MAP_NAME    type_map
+#define VALUE_T     Type*
+#define DECLS_ONLY
+#include "generic_map.h"
+#undef MAP_NAME
+#undef VALUE_T
+#undef DECLS_ONLY
+
+#define DICT_NAME   type_dict
+#define VALUE_T     Type*
+#define MAP_NAME    type_map
+#define DECLS_ONLY
+#include "generic_dict.h"
+#undef DICT_NAME
+#undef VALUE_T
+#undef MAP_NAME
+#undef DECLS_ONLY
+
+struct Type {
     int kind;
     int size;
     int align;
@@ -176,7 +213,7 @@ typedef struct Type {
     // array length
     int len;
     // struct
-    Dict *fields;
+    type_dict *fields;
     int offset;
     bool is_struct; // true if struct, false if union
     // bitfield
@@ -184,17 +221,28 @@ typedef struct Type {
     int bitsize;
     // function
     struct Type *rettype;
-    Vector *params;
+    type_vec *params;
     bool hasva;
     bool oldstyle;
-} Type;
+};
 
 typedef struct {
     char *file;
     int line;
 } SourceLoc;
 
-typedef struct Node {
+struct Node;
+typedef struct Node Node;
+
+#define VEC_NAME    node_vec
+#define VALUE_T     Node*
+#define DECLS_ONLY
+#include "generic_vec.h"
+#undef VEC_NAME
+#undef VALUE_T
+#undef DECLS_ONLY
+
+struct Node {
     int kind;
     Type *ty;
     SourceLoc *sourceLoc;
@@ -216,7 +264,7 @@ typedef struct Node {
             char *varname;
             // local
             int loff;
-            Vector *lvarinit;
+            node_vec *lvarinit;
             // global
             char *glabel;
         };
@@ -233,19 +281,19 @@ typedef struct Node {
         struct {
             char *fname;
             // Function call
-            Vector *args;
+            node_vec *args;
             struct Type *ftype;
             // Function pointer or function designator
             struct Node *fptr;
             // Function declaration
-            Vector *params;
-            Vector *localvars;
+            node_vec *params;
+            node_vec *localvars;
             struct Node *body;
         };
         // Declaration
         struct {
             struct Node *declvar;
-            Vector *declinit;
+            node_vec *declinit;
         };
         // Initializer
         struct {
@@ -267,7 +315,7 @@ typedef struct Node {
         // Return statement
         struct Node *retval;
         // Compound statement
-        Vector *stmts;
+        node_vec *stmts;
         // Struct reference
         struct {
             struct Node *struc;
@@ -275,7 +323,7 @@ typedef struct Node {
             Type *fieldtype;
         };
     };
-} Node;
+};
 
 extern Type *type_void;
 extern Type *type_bool;
@@ -333,7 +381,7 @@ char *tok2s(Token *tok);
 Dict *make_dict(void);
 void *dict_get(Dict *dict, char *key);
 void dict_put(Dict *dict, char *key, void *val);
-Vector *dict_keys(Dict *dict);
+key_vec *dict_keys(Dict *dict);
 
 // error.c
 extern bool enable_warning;
@@ -375,7 +423,8 @@ char *get_base_file(void);
 void skip_cond_incl(void);
 char *read_header_file_name(bool *std);
 bool is_keyword(Token *tok, int c);
-void token_buffer_stash(Vector *buf);
+struct token_vec;
+void token_buffer_stash(struct token_vec *buf);
 void token_buffer_unstash();
 void unget_token(Token *tok);
 Token *lex_string(char *s);
@@ -397,7 +446,7 @@ bool is_flotype(Type *ty);
 void *make_pair(void *first, void *second);
 int eval_intexpr(Node *node, Node **addr);
 Node *read_expr(void);
-Vector *read_toplevels(void);
+node_vec *read_toplevels(void);
 void parse_init(void);
 char *fullpath(char *path);
 

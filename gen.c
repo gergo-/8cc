@@ -8,6 +8,15 @@
 #include <unistd.h>
 #include "8cc.h"
 
+#define VEC_NAME    node_vec
+#define VALUE_T     Node*
+#define OMIT_TYPE_REDEF
+#include "generic_vec.h"
+#include "generic_vec.c"
+#undef VEC_NAME
+#undef VALUE_T
+#undef OMIT_TYPE_REDEF
+
 bool dumpstack = false;
 bool dumpsource = true;
 
@@ -15,19 +24,44 @@ static char *REGS[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
 static char *SREGS[] = {"dil", "sil", "dl", "cl", "r8b", "r9b"};
 static char *MREGS[] = {"edi", "esi", "edx", "ecx", "r8d", "r9d"};
 static int TAB = 8;
-static Vector *functions = &EMPTY_VECTOR;
+
+#define VEC_NAME    name_vec
+#define VALUE_T     char*
+#include "generic_vec.h"
+#include "generic_vec.c"
+#undef VEC_NAME
+#undef VALUE_T
+
+static name_vec *functions = &empty_vector(name_vec);
+
 static int stackpos;
 static int numgp;
 static int numfp;
 static FILE *outputfp;
-static Map *source_files = &EMPTY_MAP;
-static Map *source_lines = &EMPTY_MAP;
+
+#define MAP_NAME    long_map
+#define VALUE_T     long*
+#include "generic_map.h"
+#include "generic_map.c"
+#undef MAP_NAME
+#undef VALUE_T
+
+static long_map *source_files = &empty_map(long_map);
+
+#define MAP_NAME    lines_map
+#define VALUE_T     char**
+#include "generic_map.h"
+#include "generic_map.c"
+#undef MAP_NAME
+#undef VALUE_T
+
+static lines_map *source_lines = &empty_map(lines_map);
 static char *last_loc = "";
 
 static void emit_addr(Node *node);
 static void emit_expr(Node *node);
-static void emit_decl_init(Vector *inits, int off, int totalsize);
-static void do_emit_data(Vector *inits, int size, int off, int depth);
+static void emit_decl_init(node_vec *inits, int off, int totalsize);
+static void do_emit_data(node_vec *inits, int size, int off, int depth);
 static void emit_data(Node *v, int off, int depth);
 
 #define REGAREA_SIZE 176
@@ -39,11 +73,11 @@ static void emit_data(Node *v, int off, int depth);
 #define SAVE                                                            \
     int save_hook __attribute__((unused, cleanup(pop_function)));       \
     if (dumpstack)                                                      \
-        vec_push(functions, (void *)__func__);
+        name_vec_push(functions, (void *)__func__);
 
 static void pop_function(void *ignore) {
     if (dumpstack)
-        vec_pop(functions);
+        name_vec_pop(functions);
 }
 #else
 #define SAVE
@@ -51,10 +85,10 @@ static void pop_function(void *ignore) {
 
 static char *get_caller_list() {
     Buffer *b = make_buffer();
-    for (int i = 0; i < vec_len(functions); i++) {
+    for (int i = 0; i < name_vec_len(functions); i++) {
         if (i > 0)
             buf_printf(b, " -> ");
-        buf_printf(b, "%s", vec_get(functions, i));
+        buf_printf(b, "%s", name_vec_get(functions, i));
     }
     buf_write(b, '\0');
     return buf_body(b);
@@ -641,13 +675,13 @@ static int cmpinit(const void *x, const void *y) {
     return a->initoff - b->initoff;
 }
 
-static void emit_fill_holes(Vector *inits, int off, int totalsize) {
+static void emit_fill_holes(node_vec *inits, int off, int totalsize) {
     // If at least one of the fields in a variable are initialized,
     // unspecified fields has to be initialized with 0.
-    int len = vec_len(inits);
+    int len = node_vec_len(inits);
     Node **buf = malloc(len * sizeof(Node *));
     for (int i = 0; i < len; i++)
-        buf[i] = vec_get(inits, i);
+        buf[i] = node_vec_get(inits, i);
     qsort(buf, len, sizeof(Node *), cmpinit);
 
     int lastend = 0;
@@ -660,10 +694,10 @@ static void emit_fill_holes(Vector *inits, int off, int totalsize) {
     emit_zero_filler(lastend + off, totalsize + off);
 }
 
-static void emit_decl_init(Vector *inits, int off, int totalsize) {
+static void emit_decl_init(node_vec *inits, int off, int totalsize) {
     emit_fill_holes(inits, off, totalsize);
-    for (int i = 0; i < vec_len(inits); i++) {
-        Node *node = vec_get(inits, i);
+    for (int i = 0; i < node_vec_len(inits); i++) {
+        Node *node = node_vec_get(inits, i);
         assert(node->kind == AST_INIT);
         bool isbitfield = (node->totype->bitsize > 0);
         if (node->initval->kind == AST_LITERAL && !isbitfield) {
@@ -690,10 +724,10 @@ static void emit_post_inc_dec(Node *node, char *op) {
     pop("rax");
 }
 
-static void set_reg_nums(Vector *args) {
+static void set_reg_nums(node_vec *args) {
     numgp = numfp = 0;
-    for (int i = 0; i < vec_len(args); i++) {
-        Node *arg = vec_get(args, i);
+    for (int i = 0; i < node_vec_len(args); i++) {
+        Node *arg = node_vec_get(args, i);
         if (is_flotype(arg->ty))
             numfp++;
         else
@@ -820,12 +854,12 @@ static char **read_source_file(char *file) {
 static void maybe_print_source_line(char *file, int line) {
     if (!dumpsource)
         return;
-    char **lines = map_get(source_lines, file);
+    char **lines = lines_map_get(source_lines, file);
     if (!lines) {
         lines = read_source_file(file);
         if (!lines)
             return;
-        map_put(source_lines, file, lines);
+        lines_map_put(source_lines, file, lines);
     }
     int len = 0;
     for (char **p = lines; *p; p++)
@@ -834,14 +868,19 @@ static void maybe_print_source_line(char *file, int line) {
 }
 
 static void maybe_print_source_loc(Node *node) {
-    if (!node->sourceLoc)
+    if (!node->sourceLoc || !node->sourceLoc->file)
         return;
     char *file = node->sourceLoc->file;
-    long fileno = (long)map_get(source_files, file);
-    if (!fileno) {
-        fileno = map_len(source_files) + 1;
-        map_put(source_files, file, (void *)fileno);
+    long *found_fileno = long_map_get(source_files, file);
+    long fileno;
+    if (!found_fileno) {
+        fileno = long_map_len(source_files) + 1;
+        long *new_fileno = malloc(sizeof(long));
+        *new_fileno = fileno;
+        long_map_put(source_files, file, new_fileno);
         emit(".file %ld \"%s\"", fileno, quote_cstring(file));
+    } else {
+        fileno = *found_fileno;
     }
     char *loc = format(".loc %ld %d 0", fileno, node->sourceLoc->line);
     if (strcmp(loc, last_loc)) {
@@ -864,8 +903,8 @@ static void emit_gvar(Node *node) {
 
 static void emit_builtin_return_address(Node *node) {
     push("r11");
-    assert(vec_len(node->args) == 1);
-    emit_expr(vec_head(node->args));
+    assert(node_vec_len(node->args) == 1);
+    emit_expr(node_vec_head(node->args));
     char *loop = make_label();
     char *end = make_label();
     emit("mov #rbp, #r11");
@@ -883,7 +922,7 @@ static void emit_builtin_return_address(Node *node) {
 // Set the register class for parameter passing to RAX.
 // 0 is INTEGER, 1 is SSE, 2 is MEMORY.
 static void emit_builtin_reg_class(Node *node) {
-    Node *arg = vec_get(node->args, 0);
+    Node *arg = node_vec_get(node->args, 0);
     assert(arg->ty->kind == KIND_PTR);
     Type *ty = arg->ty->ptr;
     if (ty->kind == KIND_STRUCT)
@@ -896,8 +935,8 @@ static void emit_builtin_reg_class(Node *node) {
 
 static void emit_builtin_va_start(Node *node) {
     SAVE;
-    assert(vec_len(node->args) == 1);
-    emit_expr(vec_head(node->args));
+    assert(node_vec_len(node->args) == 1);
+    emit_expr(node_vec_head(node->args));
     push("rcx");
     emit("movl $%d, (#rax)", numgp * 8);
     emit("movl $%d, 4(#rax)", 48 + numfp * 16);
@@ -923,18 +962,18 @@ static bool maybe_emit_builtin(Node *node) {
     return false;
 }
 
-static void classify_args(Vector *ints, Vector *floats, Vector *rest, Vector *args) {
+static void classify_args(node_vec *ints, node_vec *floats, node_vec *rest, node_vec *args) {
     SAVE;
     int ireg = 0, xreg = 0;
     int imax = 6, xmax = 8;
-    for (int i = 0; i < vec_len(args); i++) {
-        Node *v = vec_get(args, i);
+    for (int i = 0; i < node_vec_len(args); i++) {
+        Node *v = node_vec_get(args, i);
         if (v->ty->kind == KIND_STRUCT)
-            vec_push(rest, v);
+            node_vec_push(rest, v);
         else if (is_flotype(v->ty))
-            vec_push((xreg++ < xmax) ? floats : rest, v);
+            node_vec_push((xreg++ < xmax) ? floats : rest, v);
         else
-            vec_push((ireg++ < imax) ? ints : rest, v);
+            node_vec_push((ireg++ < imax) ? ints : rest, v);
     }
 }
 
@@ -956,11 +995,11 @@ static void restore_arg_regs(int nints, int nfloats) {
         pop(REGS[i]);
 }
 
-static int emit_args(Vector *vals) {
+static int emit_args(node_vec *vals) {
     SAVE;
     int r = 0;
-    for (int i = 0; i < vec_len(vals); i++) {
-        Node *v = vec_get(vals, i);
+    for (int i = 0; i < node_vec_len(vals); i++) {
+        Node *v = node_vec_get(vals, i);
         if (v->ty->kind == KIND_STRUCT) {
             emit_addr(v);
             r += push_struct(v->ty->size);
@@ -1001,11 +1040,11 @@ static void emit_func_call(Node *node) {
     bool isptr = (node->kind == AST_FUNCPTR_CALL);
     Type *ftype = isptr ? node->fptr->ty->ptr : node->ftype;
 
-    Vector *ints = make_vector();
-    Vector *floats = make_vector();
-    Vector *rest = make_vector();
+    node_vec *ints = make_node_vec();
+    node_vec *floats = make_node_vec();
+    node_vec *rest = make_node_vec();
     classify_args(ints, floats, rest, node->args);
-    save_arg_regs(vec_len(ints), vec_len(floats));
+    save_arg_regs(node_vec_len(ints), node_vec_len(floats));
 
     bool padding = stackpos % 16;
     if (padding) {
@@ -1013,19 +1052,19 @@ static void emit_func_call(Node *node) {
         stackpos += 8;
     }
 
-    int restsize = emit_args(vec_reverse(rest));
+    int restsize = emit_args(node_vec_reverse(rest));
     if (isptr) {
         emit_expr(node->fptr);
         push("rax");
     }
     emit_args(ints);
     emit_args(floats);
-    pop_float_args(vec_len(floats));
-    pop_int_args(vec_len(ints));
+    pop_float_args(node_vec_len(floats));
+    pop_int_args(node_vec_len(ints));
 
     if (isptr) pop("r11");
     if (ftype->hasva)
-        emit("mov $%u, #eax", vec_len(floats));
+        emit("mov $%u, #eax", node_vec_len(floats));
 
     if (isptr)
         emit("call *#r11");
@@ -1040,7 +1079,7 @@ static void emit_func_call(Node *node) {
         emit("add $8, #rsp");
         stackpos -= 8;
     }
-    restore_arg_regs(vec_len(ints), vec_len(floats));
+    restore_arg_regs(node_vec_len(ints), node_vec_len(floats));
     assert(opos == stackpos);
 }
 
@@ -1099,8 +1138,8 @@ static void emit_return(Node *node) {
 
 static void emit_compound_stmt(Node *node) {
     SAVE;
-    for (int i = 0; i < vec_len(node->stmts); i++)
-        emit_expr(vec_get(node->stmts, i));
+    for (int i = 0; i < node_vec_len(node->stmts); i++)
+        emit_expr(node_vec_get(node->stmts, i));
 }
 
 static void emit_logand(Node *node) {
@@ -1351,18 +1390,18 @@ static void emit_data_primtype(Type *ty, Node *val, int depth) {
     }
 }
 
-static void do_emit_data(Vector *inits, int size, int off, int depth) {
+static void do_emit_data(node_vec *inits, int size, int off, int depth) {
     SAVE;
-    for (int i = 0; i < vec_len(inits) && 0 < size; i++) {
-        Node *node = vec_get(inits, i);
+    for (int i = 0; i < node_vec_len(inits) && 0 < size; i++) {
+        Node *node = node_vec_get(inits, i);
         Node *v = node->initval;
         emit_padding(node, off);
         if (node->totype->bitsize > 0) {
             assert(node->totype->bitoff == 0);
             long data = eval_intexpr(v, NULL);
             Type *totype = node->totype;
-            for (i++ ; i < vec_len(inits); i++) {
-                node = vec_get(inits, i);
+            for (i++ ; i < node_vec_len(inits); i++) {
+                node = node_vec_get(inits, i);
                 if (node->totype->bitsize <= 0) {
                     break;
                 }
@@ -1373,7 +1412,7 @@ static void do_emit_data(Vector *inits, int size, int off, int depth) {
             emit_data_primtype(totype, &(Node){ AST_LITERAL, totype, .ival = data }, depth);
             off += totype->size;
             size -= totype->size;
-            if (i == vec_len(inits))
+            if (i == node_vec_len(inits))
                 break;
         } else {
             off += node->totype->size;
@@ -1436,12 +1475,12 @@ static int emit_regsave_area() {
     return REGAREA_SIZE;
 }
 
-static void push_func_params(Vector *params, int off) {
+static void push_func_params(node_vec *params, int off) {
     int ireg = 0;
     int xreg = 0;
     int arg = 2;
-    for (int i = 0; i < vec_len(params); i++) {
-        Node *v = vec_get(params, i);
+    for (int i = 0; i < node_vec_len(params); i++) {
+        Node *v = node_vec_get(params, i);
         if (v->ty->kind == KIND_STRUCT) {
             emit("lea %d(#rbp), #rax", arg * 8);
             int size = push_struct(v->ty->size);
@@ -1490,11 +1529,11 @@ static void emit_func_prologue(Node *func) {
         off -= emit_regsave_area();
     }
     push_func_params(func->params, off);
-    off -= vec_len(func->params) * 8;
+    off -= node_vec_len(func->params) * 8;
 
     int localarea = 0;
-    for (int i = 0; i < vec_len(func->localvars); i++) {
-        Node *v = vec_get(func->localvars, i);
+    for (int i = 0; i < node_vec_len(func->localvars); i++) {
+        Node *v = node_vec_get(func->localvars, i);
         int size = align(v->ty->size, 8);
         assert(size % 8 == 0);
         off -= size;

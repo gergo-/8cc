@@ -27,7 +27,20 @@
 #include <string.h>
 #include "8cc.h"
 
-static Vector *buffers = &EMPTY_VECTOR;
+#define VEC_NAME    token_vec
+#define VALUE_T     Token*
+#include "generic_vec.h"
+#undef VEC_NAME
+#undef VALUE_T
+
+#define VEC_NAME    buffer_vec
+#define VALUE_T     token_vec*
+#include "generic_vec.h"
+#include "generic_vec.c"
+#undef VEC_NAME
+#undef VALUE_T
+
+static buffer_vec *buffers = &empty_vector(buffer_vec);
 static Token *space_token = &(Token){ TSPACE };
 static Token *newline_token = &(Token){ TNEWLINE };
 static Token *eof_token = &(Token){ TEOF };
@@ -50,7 +63,7 @@ static char *pos_string(Pos *p) {
 static void skip_block_comment(void);
 
 void lex_init(char *filename) {
-    vec_push(buffers, make_vector());
+    buffer_vec_push(buffers, make_token_vec());
     if (!strcmp(filename, "-")) {
         stream_push(make_file(stdin, "-"));
         return;
@@ -514,7 +527,7 @@ static Token *do_read_token() {
 }
 
 static bool buffer_empty() {
-    return vec_len(buffers) == 1 && vec_len(vec_head(buffers)) == 0;
+    return buffer_vec_len(buffers) == 1 && token_vec_len(buffer_vec_head(buffers)) == 0;
 }
 
 // Reads a header file name for #include.
@@ -564,19 +577,19 @@ bool is_keyword(Token *tok, int c) {
 // so that you can get the tokens as return values of lex() again.
 // After the tokens are exhausted, EOF is returned from lex() until
 // "unstash" is called to restore the original state.
-void token_buffer_stash(Vector *buf) {
-    vec_push(buffers, buf);
+void token_buffer_stash(token_vec *buf) {
+    buffer_vec_push(buffers, buf);
 }
 
 void token_buffer_unstash() {
-    vec_pop(buffers);
+    buffer_vec_pop(buffers);
 }
 
 void unget_token(Token *tok) {
     if (tok->kind == TEOF)
         return;
-    Vector *buf = vec_tail(buffers);
-    vec_push(buf, tok);
+    token_vec *buf = buffer_vec_tail(buffers);
+    token_vec_push(buf, tok);
 }
 
 // Reads a token from a given string.
@@ -594,10 +607,10 @@ Token *lex_string(char *s) {
 }
 
 Token *lex() {
-    Vector *buf = vec_tail(buffers);
-    if (vec_len(buf) > 0)
-        return vec_pop(buf);
-    if (vec_len(buffers) > 1)
+    token_vec *buf = buffer_vec_tail(buffers);
+    if (token_vec_len(buf) > 0)
+        return token_vec_pop(buf);
+    if (buffer_vec_len(buffers) > 1)
         return eof_token;
     bool bol = (current_file()->column == 1);
     Token *tok = do_read_token();

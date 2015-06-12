@@ -6,7 +6,7 @@
 Dict *make_dict() {
     Dict *r = malloc(sizeof(Dict));
     r->map = make_map();
-    r->key = make_vector();
+    r->key = make_key_vec();
     return r;
 }
 
@@ -16,9 +16,18 @@ void *dict_get(Dict *dict, char *key) {
 
 void dict_put(Dict *dict, char *key, void *val) {
     map_put(dict->map, key, val);
-    vec_push(dict->key, key);
+    key_vec_push(dict->key, key);
 }
 
-Vector *dict_keys(Dict *dict) {
+key_vec *dict_keys(Dict *dict) {
     return dict->key;
 }
+
+#define VEC_NAME    key_vec
+#define VALUE_T     char*
+#define OMIT_TYPE_REDEF
+#include "generic_vec.h"
+#include "generic_vec.c"
+#undef VEC_NAME
+#undef VALUE_T
+#undef OMIT_TYPE_REDEF
