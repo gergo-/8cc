@@ -583,6 +583,8 @@ static Node *binop(int op, Node *lhs, Node *rhs) {
 }
 
 static bool is_same_struct(Type *a, Type *b) {
+    if (a == b)
+        return true;
     if (a->kind != b->kind)
         return false;
     switch (a->kind) {
@@ -598,9 +600,16 @@ static bool is_same_struct(Type *a, Type *b) {
         Vector *kb = dict_keys(b->fields);
         if (vec_len(ka) != vec_len(kb))
             return false;
-        for (int i = 0; i < vec_len(ka); i++)
-            if (!is_same_struct(vec_get(ka, i), vec_get(kb, i)))
+        for (int i = 0; i < vec_len(ka); i++) {
+            char *a_name = vec_get(ka, i);
+            char *b_name = vec_get(kb, i);
+            if (strcmp(a_name, b_name) != 0)
                 return false;
+            Type *a_type = dict_get(a->fields, a_name);
+            Type *b_type = dict_get(b->fields, b_name);
+            if (!is_same_struct(a_type, b_type))
+                return false;
+        }
         return true;
     }
     default:
