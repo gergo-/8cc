@@ -8,6 +8,10 @@ override CFLAGS += -DBUILD_DIR='"$(shell pwd)"'
 8cc: 8cc.h main.o $(OBJS)
 	cc -o $@ main.o $(OBJS) $(LDFLAGS)
 
+8cc.h: generic_dict.h generic_dict.c generic_map.h generic_map.c \
+	   generic_vec.h generic_vec.c
+	touch 8cc.h
+
 $(OBJS) utiltest.o main.o: 8cc.h keyword.inc
 
 utiltest: 8cc.h utiltest.o $(OBJS)
