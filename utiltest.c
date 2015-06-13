@@ -128,6 +128,82 @@ static void test_dict() {
     assert_int(2, vec_len(dict_keys(dict)));
 }
 
+typedef struct {
+    int a;
+    int b;
+} str;
+
+#define VEC_NAME    str_vec
+#define VALUE_T     str
+#include "generic_vec.h"
+#include "generic_vec.c"
+#undef VEC_NAME
+#undef VALUE_T
+
+static void test_generic_vec() {
+    str_vec *v = make_str_vec();
+    assert_int(0, str_vec_len(v));
+    str_vec_push(v, (str) { 1, 2 });
+    str_vec_push(v, (str) { 3, 4 });
+    assert_int(2, str_vec_len(v));
+
+    str s0 = str_vec_get(v, 0);
+    assert_int(1, s0.a);
+    assert_int(2, s0.b);
+    str s1 = str_vec_get(v, 1);
+    assert_int(3, s1.a);
+    assert_int(4, s1.b);
+}
+
+#define MAP_NAME    str_map
+#define VALUE_T     str
+#include "generic_map.h"
+#include "generic_map.c"
+#undef MAP_NAME
+#undef VALUE_T
+
+static void test_generic_map() {
+    str_map *m = make_str_map();
+    assert_int(0, str_map_len(m));
+    str_map_put(m, "first", (str) { 1, 2 });
+    str_map_put(m, "second", (str) { 3, 4 });
+    assert_int(2, str_map_len(m));
+
+    str first = str_map_get(m, "first");
+    assert_int(1, first.a);
+    assert_int(2, first.b);
+    str second = str_map_get(m, "second");
+    assert_int(3, second.a);
+    assert_int(4, second.b);
+}
+
+#define DICT_NAME   str_dict
+#define MAP_NAME    str_map
+#define VALUE_T     str
+#include "generic_dict.h"
+#include "generic_dict.c"
+#undef DICT_NAME
+#undef MAP_NAME
+#undef VALUE_T
+
+static void test_generic_dict() {
+    str_dict *d = make_str_dict();
+    assert_int(0, key_vec_len(str_dict_keys(d)));
+    str_dict_put(d, "first", (str) { 1, 2 });
+    str_dict_put(d, "second", (str) { 3, 4 });
+    assert_int(2, key_vec_len(str_dict_keys(d)));
+
+    str first = str_dict_get(d, "first");
+    assert_int(1, first.a);
+    assert_int(2, first.b);
+    str second = str_dict_get(d, "second");
+    assert_int(3, second.a);
+    assert_int(4, second.b);
+
+    assert_string("first", key_vec_get(str_dict_keys(d), 0));
+    assert_string("second", key_vec_get(str_dict_keys(d), 1));
+}
+
 static void test_set() {
     Set *s = NULL;
     assert_int(0, set_has(s, "abc"));
@@ -178,6 +254,9 @@ int main(int argc, char **argv) {
     test_map();
     test_map_stack();
     test_dict();
+    test_generic_vec();
+    test_generic_map();
+    test_generic_dict();
     test_set();
     test_path();
     test_file();
