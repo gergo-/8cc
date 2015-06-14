@@ -31,7 +31,7 @@ static char *do_ty2s(type_dict *dict, Type *ty) {
         char *kind = ty->is_struct ? "struct" : "union";
         if (type_dict_get(dict, format("%p", ty)))
             return format("(%s)", kind);
-        type_dict_put(dict, format("%p", ty), (void *)1);
+        type_dict_put(dict, format("%p", ty), ty);
         if (ty->fields) {
             Buffer *b = make_buffer();
             buf_printf(b, "(%s", kind);

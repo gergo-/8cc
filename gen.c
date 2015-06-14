@@ -73,7 +73,7 @@ static void emit_data(Node *v, int off, int depth);
 #define SAVE                                                            \
     int save_hook __attribute__((unused, cleanup(pop_function)));       \
     if (dumpstack)                                                      \
-        name_vec_push(functions, (void *)__func__);
+        name_vec_push(functions, (char *)__func__);
 
 static void pop_function(void *ignore) {
     if (dumpstack)
